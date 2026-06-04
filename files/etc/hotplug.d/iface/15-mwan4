@@ -18,7 +18,7 @@ mwan4_hotplug_update_wan_status() {
 }
 
 [ "x$MWAN4" = "x" ] && {
-	local enabled=$(uci -q get mwan4.$INTERFACE.enabled)
+	enabled=$(uci -q get mwan4.$INTERFACE.enabled)
 	if [ -n "$enabled" ]; then
 		if [ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifdown" ]; then
 			mwan4_hotplug_update_wan_status $INTERFACE $ACTION
