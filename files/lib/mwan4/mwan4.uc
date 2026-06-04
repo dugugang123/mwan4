@@ -60,6 +60,7 @@ let mwan4 = {
 	source_routing: false,
 	errors: [], warnings: [],
 	reset: function() { this.errors = []; this.warnings = []; },
+	no_apply: false,
 };
 
 // ── Utility Functions ────────────────────────────────────────────────
@@ -255,6 +256,10 @@ function nft_output(args) {
 	return cmd_output('nft ' + args);
 }
 
+function nft_flush_set(name,family) {
+	run(sprintf('nft flush set inet %s %s_%s_%s', NFT_TABLE, NFT_PREFIX, name, family));
+}
+
 // ── Ubus Helpers ─────────────────────────────────────────────────────
 
 function ubus_call(path, method, args) {
@@ -417,8 +422,9 @@ function get_families(iface) {
 
 function foreach_family(iface, cb, ...extra) {
 	let families = get_families(iface);
-	for (let family in families)
-		call(cb, null, iface, family, ...extra);
+	for (let family in families) {
+		call(cb, null, null, iface, family, ...extra);
+	}
 }
 
 // ── Interface Helpers ────────────────────────────────────────────────
@@ -490,9 +496,9 @@ function get_mwan4track_status(iface, family) {
 	let pid = read_str(sprintf('%s/%s/PID', TRACK_STATUS_DIR, status_iface));
 	if (!pid) return 'down';
 
-	let cmdline = read_str(sprintf('/proc/%s/cmdline', pid));
-	if (!cmdline || index(cmdline, 'mwan4track') < 0 || index(cmdline, status_iface) < 0)
-		return 'down';
+//	let cmdline = read_str(sprintf('/proc/%s/cmdline', pid));
+//	if (!cmdline || index(cmdline, 'mwan4track') < 0 || index(cmdline, status_iface) < 0)
+//		return 'down';
 
 	let started = read_str(sprintf('%s/%s/STARTED', TRACK_STATUS_DIR, status_iface));
 	switch (started) {
@@ -535,6 +541,13 @@ function route_line_dev(route_line, route_family) {
 	let m = match(route_line, /dev ([^ ]+)/);
 	if (!m) return null;
 	return mwan4.dev_tbl[route_family]?.[m[1]];
+}
+
+function get_iface_mark(iface) {
+	_ensure_init();
+	let id = get_iface_id(iface);
+	if (!id) return null;
+	return id2mask(id, mwan4.mmx_mask);
 }
 
 // ── Route Line Cleaning ──────────────────────────────────────────────
@@ -786,10 +799,14 @@ function set_custom_nftset() {
 	}
 
 	push(lines, '}');
-	let tmpfile = NFT_TEMP + '.custom_sets';
-	writefile(tmpfile, join('\n', lines) + '\n');
-	nft_file('apply', tmpfile);
-	unlink(tmpfile);
+	if (!mwan4.no_apply) {
+		let tmpfile = NFT_TEMP + '.custom_sets';
+		writefile(tmpfile, join('\n', lines) + '\n');
+		nft_flush_set('custom','ipv4');
+		if (mwan4.no_ipv6 == 0) nft_flush_set('custom','ipv6');
+		nft_file('apply', tmpfile);
+		unlink(tmpfile);
+	}
 	nft_file('add', 'rules', ...lines);
 }
 
@@ -825,11 +842,13 @@ function set_connected_ipv4() {
 	for (let addr in host_list) push(lines, sprintf('\t\t\t%s,', addr));
 	push(lines, '\t\t\t224.0.0.0/3');
 	push(lines, '\t\t}', '\t}', '}');
-
-	let tmpfile = NFT_TEMP + '.connected_v4';
-	writefile(tmpfile, join('\n', lines) + '\n');
-	nft_file('apply', tmpfile);
-	unlink(tmpfile);
+	if (!mwan4.no_apply) {
+		let tmpfile = NFT_TEMP + '.connected_v4';
+		unlink(tmpfile);
+		writefile(tmpfile, join('\n', lines) + '\n');
+		nft_flush_set('connected','ipv4');
+		nft_file('apply', tmpfile);
+	}
 	nft_file('add', 'rules', ...lines);
 }
 
@@ -855,11 +874,13 @@ function set_connected_ipv6() {
 	}
 	if (!has) push(lines, '\t\t\t::1,');
 	push(lines, '\t\t}', '\t}', '}');
-
-	let tmpfile = NFT_TEMP + '.connected_v6';
-	writefile(tmpfile, join('\n', lines) + '\n');
-	nft_file('apply', tmpfile);
-	unlink(tmpfile);
+	if (!mwan4.no_apply) {
+		let tmpfile = NFT_TEMP + '.connected_v6';
+		writefile(tmpfile, join('\n', lines) + '\n');
+		nft_flush_set('connected','ipv6');
+		nft_file('apply', tmpfile);
+		unlink(tmpfile);
+	}
 	nft_file('add', 'rules', ...lines);
 }
 
@@ -882,11 +903,14 @@ function set_dynamic_nftset() {
 		);
 	}
 	push(lines, '}');
-
-	let tmpfile = NFT_TEMP + '.dynamic_init';
-	writefile(tmpfile, join('\n', lines) + '\n');
-	nft_file('apply', tmpfile);
-	unlink(tmpfile);
+	if (!mwan4.no_apply) {
+		let tmpfile = NFT_TEMP + '.dynamic_init';
+		writefile(tmpfile, join('\n', lines) + '\n');
+		nft_flush_set('dynamic','ipv4');
+		if (mwan4.no_ipv6 == 0) nft_flush_set('dynamic','ipv6');
+		nft_file('apply', tmpfile);
+		unlink(tmpfile);
+	}
 	nft_file('add', 'rules', ...lines);
 }
 
@@ -1337,6 +1361,26 @@ function delete_iface_route(iface) {
 
 // ── Interface IP Rules ───────────────────────────────────────────────
 
+function delete_iface_rules_family(iface, family) { // ucode-lsp disable
+	let id = get_iface_id(iface);
+	if (!id) return;
+	let ip_cmd;
+	if (family == 'ipv4')
+		ip_cmd = 'ip -4';
+	else if (family == 'ipv6' && mwan4.no_ipv6 == 0)
+		ip_cmd = 'ip -6';
+	else
+		return;
+	for (let line in cmd_lines(sprintf('%s rule list', ip_cmd))) {
+		let m = match(line, /^([0-9]+):/);
+		if (!m) continue;
+		let pref = int(m[1]);
+		if (pref > 1000 && pref < 4000 && (pref % 1000) == id)
+			run(sprintf('%s rule del pref %d', ip_cmd, pref));
+	}
+}
+
+
 function create_iface_rules(iface, device) {
 	foreach_family(iface, function(iface, family, device) {
 		let id = get_iface_id(iface);
@@ -1358,27 +1402,6 @@ function create_iface_rules(iface, device) {
 		run(sprintf('%s rule add pref %d fwmark %s/%s lookup %d', ip_cmd, id + 2000, mark, mwan4.mmx_mask, id));
 		run(sprintf('%s rule add pref %d fwmark %s/%s unreachable', ip_cmd, id + 3000, mark, mwan4.mmx_mask));
 	}, device);
-}
-
-function delete_iface_rules_family(iface, family) { // ucode-lsp disable
-	let id = get_iface_id(iface);
-	if (!id) return;
-
-	let ip_cmd;
-	if (family == 'ipv4')
-		ip_cmd = 'ip -4';
-	else if (family == 'ipv6' && mwan4.no_ipv6 == 0)
-		ip_cmd = 'ip -6';
-	else
-		return;
-
-	for (let line in cmd_lines(sprintf('%s rule list', ip_cmd))) {
-		let m = match(line, /^([0-9]+):/);
-		if (!m) continue;
-		let pref = int(m[1]);
-		if (pref > 1000 && pref < 4000 && (pref % 1000) == id)
-			run(sprintf('%s rule del pref %d', ip_cmd, pref));
-	}
 }
 
 function delete_iface_rules(iface) {
@@ -1441,7 +1464,8 @@ function report_iface_status() {
 
 function get_strategies_data(family_suffix) {
 	let strategies = {};
-	let chains_out = nft_output(sprintf('list chains inet %s 2>/dev/null', NFT_TABLE));
+	//let chains_out = nft_output(sprintf('list chains inet %s 2>/dev/null', NFT_TABLE));
+	let chains_out = nft_output(sprintf('list chains 2>/dev/null'));
 
 	for (let line in split(chains_out, '\n')) {
 		let m = match(line, /chain (mwan4_strategy_(.+)_(ipv4|ipv6))/);
@@ -1486,18 +1510,40 @@ function report_strategies(family_suffix) {
 function report_connected(family) {
 	let setname = sprintf('%s_connected_%s', NFT_PREFIX, family);
 	let out = nft_output(sprintf('list set inet %s %s 2>/dev/null', NFT_TABLE, setname));
-	let result = [];
-	let in_elements = false;
-	for (let line in split(out, '\n')) {
-		line = trim(line);
-		if (match(line, /elements = \{/)) { in_elements = true; continue; }
-		if (in_elements && match(line, /\}/)) break;
-		if (in_elements && length(line)) {
-			line = replace(line, /[,\s]+$/, '');
-			if (length(line)) push(result, line);
-		}
-	}
-	return result;
+    let result = [];
+    let in_elements = false;
+    
+    for (let line in split(out, '\n')) {
+        line = trim(line);
+        
+        if (match(line, /elements = \{/)) { 
+            in_elements = true; 
+            let inline = replace(line, /^.*\{\s*/, '');
+            if (length(inline) && inline != '') {
+                inline = replace(inline, /\}.*$/, '');
+                for (let elem in split(inline, ',')) {
+                    elem = trim(elem);
+                    if (length(elem)) push(result, elem);
+                }
+            }
+            continue; 
+        }
+        
+        if (in_elements && match(line, /\}/)) {
+            let last = replace(line, /\}.*$/, '');
+            for (let elem in split(last, ',')) {
+                elem = trim(elem);
+                if (length(elem)) push(result, elem);
+            }
+            break; 
+        }
+        
+        if (in_elements && length(line)) {
+            line = replace(line, /,\s*$/, '');
+            if (length(line)) push(result, line);
+        }
+    }
+    return result;
 }
 
 function report_rules(family) {
@@ -1527,9 +1573,9 @@ function interface_hotplug_shutdown(iface, ifdown) {
 	if (iface_st != 'online' && !ifdown) return;
 
 	if (ifdown) {
-		system(sprintf("env -i ACTION=ifdown INTERFACE=%s sh /etc/hotplug.d/iface/15-mwan4", iface));
+		system(sprintf("env -i MWAN4=1 ACTION=ifdown INTERFACE=%s sh /etc/hotplug.d/iface/15-mwan4", iface));
 	} else if (iface_st == 'online') {
-		system(sprintf("env -i MWAN4_SHUTDOWN=1 ACTION=disconnected INTERFACE=%s /sbin/hotplug-call iface", iface));
+		system(sprintf("env -i MWAN4=1 MWAN4_SHUTDOWN=1 ACTION=disconnected INTERFACE=%s /sbin/hotplug-call iface", iface));
 	}
 }
 
@@ -1548,7 +1594,7 @@ function track_clean(iface) {
 function flush_conntrack(iface, action) {
 	let flush_list = uci_get_list(iface, 'flush_conntrack');
 	for (let trigger in flush_list) {
-		if (trigger == action) {
+		if (trim(trigger) == trim(action)) {
 			let mark = get_iface_mark(iface);
 			if (mark) {
 				run(sprintf('conntrack -D --mark %s/%s 2>/dev/null', mark, mwan4.mmx_mask));
@@ -1580,7 +1626,7 @@ function ifup(iface, caller) {
 	if (!iface_status?.up || !iface_status?.l3_device) return;
 
 	let l3_device = iface_status.l3_device;
-	let cmd_str = sprintf("env -i MWAN4_STARTUP=%s ACTION=ifup INTERFACE=%s DEVICE=%s sh /etc/hotplug.d/iface/15-mwan4",
+	let cmd_str = sprintf("env -i MWAN4=1 MWAN4_STARTUP=%s ACTION=ifup INTERFACE=%s DEVICE=%s sh /etc/hotplug.d/iface/15-mwan4",
 		caller, iface, l3_device);
 	system(cmd_str);
 }
@@ -1590,13 +1636,6 @@ function ifup(iface, caller) {
 function is_interface(iface) {
 	_ensure_init();
 	return uci_bool(uci_get(iface, 'enabled'));
-}
-
-function get_iface_mark(iface) {
-	_ensure_init();
-	let id = get_iface_id(iface);
-	if (!id) return null;
-	return id2mask(id, mwan4.mmx_mask);
 }
 
 function get_iface_chain(iface) {

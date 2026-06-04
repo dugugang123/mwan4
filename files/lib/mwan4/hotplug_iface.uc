@@ -60,6 +60,18 @@ function signal_trackers(signame) {
 	}
 }
 
+function rebuild_rules() {
+	m.no_apply=true;
+	m.nft_file('create', 'rules');
+	m.set_dynamic_nftset();
+	m.set_connected_ipv4();
+	m.set_connected_ipv6();
+	m.set_custom_nftset();
+	m.set_user_rules();
+	m.nft_file('install', 'rules');
+	m.no_apply=false;
+}
+
 switch (ACTION) {
 case 'connected':
 	m.set_iface_hotplug_state(INTERFACE, 'online');
@@ -76,6 +88,7 @@ case 'ifup':
 		m.set_general_rules();
 		m.rebuild_dynamic();
 		m.nft_file('install', 'dynamic');
+		rebuild_rules();
 		m.fw4_reload();
 	}
 	signal_trackers('USR2');

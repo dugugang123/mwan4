@@ -144,10 +144,11 @@ function handle_route(raw_line) {
 
 		// Check if action needed (table may already be flushed)
 		if (action == 'del') {
+			let trim_route_line = trim(route_line);
 			let tbl_content = m.cmd_lines(sprintf('%s route list table %d 2>/dev/null', ip, tbl_id));
 			let found = false;
 			for (let line in tbl_content) {
-				if (line == route_line) { found = true; break; }
+				if (trim(line) == trim_route_line) { found = true; break; }
 			}
 			if (!found) {
 				m.LOG('debug', 'skipping already deleted route in table', tbl_id);

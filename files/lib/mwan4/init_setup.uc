@@ -23,12 +23,14 @@ m.uci_foreach('interface', function(s) {
 m.rebuild_dynamic();
 
 // Generate rules file (sets + user rules)
+m.no_apply=true;
 m.nft_file('create', 'rules');
 m.set_dynamic_nftset();
 m.set_connected_ipv4();
 m.set_connected_ipv6();
 m.set_custom_nftset();
 m.set_user_rules();
+m.no_apply=false;
 
 // Validate combined and install
 m.nft_file('install', 'all');
