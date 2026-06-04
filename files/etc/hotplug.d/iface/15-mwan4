@@ -12,6 +12,20 @@ if { [ "$ACTION" = "ifup" ] || [ "$ACTION" = "connected" ] ; } && [ -z "$DEVICE"
 	exit 3
 fi
 
+mwan4_hotplug_update_wan_status() {
+	mkdir -p /var/run/iface_status
+	echo "$2" > /var/run/iface_status/$1
+}
+
+[ "x$MWAN4" = "x" ] && {
+	local enabled=$(uci -q get mwan4.$INTERFACE.enabled)
+	if [ -n "$enabled" ]; then
+		if [ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifdown" ]; then
+			mwan4_hotplug_update_wan_status $INTERFACE $ACTION
+		fi
+	fi
+}
+
 initscript=/etc/init.d/mwan4
 . /lib/functions/procd.sh
 
