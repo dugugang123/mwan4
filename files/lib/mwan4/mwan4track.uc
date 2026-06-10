@@ -70,7 +70,7 @@ function ws(file, value) {
 }
 
 function hotplug(action, extra) {
-	let cmd = sprintf('env -i ACTION=%s INTERFACE=%s DEVICE=%s',
+	let cmd = sprintf('env -i MWAN4=1 ACTION=%s INTERFACE=%s DEVICE=%s',
 		action, INTERFACE, DEVICE);
 	if (extra) cmd += ' ' + extra;
 	cmd += ' /sbin/hotplug-call iface';
